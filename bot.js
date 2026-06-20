@@ -22,7 +22,6 @@ let config = {
 let deletedCache = new Map();
 let pairingCode = null;
 
-// ---------- EXPRESS WEB SERVER ----------
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -41,7 +40,6 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`✅ Web server running on port ${PORT}`);
 });
-// -----------------------------------------
 
 async function startBot() {
     console.log('🔧 Initializing bot...');
@@ -51,12 +49,10 @@ async function startBot() {
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
         browser: ['Cloud Bot', 'Chrome', '1.0.0'],
-        // pairingCode: true // not needed for manual request
     });
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
-        console.log('📡 Connection update:', update);
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log(shouldReconnect ? '🔄 Reconnecting...' : '❌ Logged out.');
@@ -66,11 +62,11 @@ async function startBot() {
         }
     });
 
-    // ---------- REQUEST PAIRING CODE ----------
+    // ✅ Correct number: +255761600360
     setTimeout(async () => {
         try {
             console.log('📱 Requesting pairing code...');
-            const code = await sock.requestPairingCode('25576160036'); // YOUR NUMBER (without +)
+            const code = await sock.requestPairingCode('255761600360');
             pairingCode = code.match(/.{1,4}/g)?.join('-') || code;
             console.log(`🔑 Pairing code: ${pairingCode}`);
             console.log('Go to your Render URL to see it.');
@@ -79,7 +75,6 @@ async function startBot() {
         }
     }, 5000);
 
-    // ---------- SOCKET EVENTS ----------
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
