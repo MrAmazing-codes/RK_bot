@@ -18,22 +18,18 @@ async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
+        printQRInTerminal: true,          // ✅ QR mode enabled
         logger: pino({ level: 'silent' }),
         browser: ['Cloud Bot', 'Chrome', '1.0.0'],
-        pairingCode: true
+        // Remove pairingCode to force QR
     });
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, pairingCode, lastDisconnect } = update;
-        if (pairingCode) {
-            console.log(`\n🔑 PAIRING CODE: ${pairingCode}\n`);
-            console.log('Open WhatsApp → Linked Devices → Link a Device → enter this code.\n');
-        }
+        const { connection, lastDisconnect } = update;
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log(shouldReconnect ? '🔄 Reconnecting...' : '❌ Logged out.');
-            if (shouldReconnect) setTimeout(startBot, 5000);
+            if (shouldReconnect) setTimeout(startBot, 10000); // longer delay
         } else if (connection === 'open') {
             console.log('✅ Bot connected! Send !config to see toggles.');
         }
