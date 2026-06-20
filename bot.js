@@ -27,10 +27,9 @@ async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,          // ✅ QR code will appear
+        printQRInTerminal: true,
         logger: pino({ level: 'silent' }),
         browser: ['Cloud Bot', 'Chrome', '1.0.0'],
-        // pairingCode: false            // ensure QR mode
     });
 
     sock.ev.on('connection.update', async (update) => {
@@ -38,7 +37,7 @@ async function startBot() {
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log(shouldReconnect ? '🔄 Reconnecting...' : '❌ Logged out.');
-            if (shouldReconnect) setTimeout(startBot, 2000); // faster reconnect
+            if (shouldReconnect) setTimeout(startBot, 2000);
         } else if (connection === 'open') {
             console.log('✅ Bot connected! Send !config to see toggles.');
         }
@@ -115,5 +114,18 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 }
+
+// ✅ Keep the bot alive by listening on a port
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+    res.send('WhatsApp Bot is running!');
+});
+
+app.listen(PORT, () => {
+    console.log(`✅ Web server running on port ${PORT}`);
+});
 
 startBot().catch(err => console.error('Failed to start:', err));
