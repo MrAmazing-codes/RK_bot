@@ -3,6 +3,14 @@ const fs = require('fs');
 const path = require('path');
 const pino = require('pino');
 
+// ---------- DELETE OLD SESSION ON EVERY START ----------
+const AUTH_DIR = './auth_info';
+if (fs.existsSync(AUTH_DIR)) {
+    console.log('🗑️ Removing old session...');
+    fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+}
+// -------------------------------------------------------
+
 const SAVE_DIR = './saved_media';
 if (!fs.existsSync(SAVE_DIR)) fs.mkdirSync(SAVE_DIR, { recursive: true });
 
@@ -15,13 +23,14 @@ let config = {
 let deletedCache = new Map();
 
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+    console.log('🔧 Initializing bot...');
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,          // ✅ QR mode enabled
+        printQRInTerminal: true,          // ✅ QR code will appear
         logger: pino({ level: 'silent' }),
         browser: ['Cloud Bot', 'Chrome', '1.0.0'],
-        // Remove pairingCode to force QR
+        // pairingCode: false            // ensure QR mode
     });
 
     sock.ev.on('connection.update', async (update) => {
@@ -29,7 +38,7 @@ async function startBot() {
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log(shouldReconnect ? '🔄 Reconnecting...' : '❌ Logged out.');
-            if (shouldReconnect) setTimeout(startBot, 10000); // longer delay
+            if (shouldReconnect) setTimeout(startBot, 2000); // faster reconnect
         } else if (connection === 'open') {
             console.log('✅ Bot connected! Send !config to see toggles.');
         }
