@@ -2,14 +2,13 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, download
 const fs = require('fs');
 const path = require('path');
 const pino = require('pino');
+const express = require('express');
 
-// ---------- DELETE OLD SESSION ON EVERY START ----------
 const AUTH_DIR = './auth_info';
 if (fs.existsSync(AUTH_DIR)) {
     console.log('🗑️ Removing old session...');
     fs.rmSync(AUTH_DIR, { recursive: true, force: true });
 }
-// -------------------------------------------------------
 
 const SAVE_DIR = './saved_media';
 if (!fs.existsSync(SAVE_DIR)) fs.mkdirSync(SAVE_DIR, { recursive: true });
@@ -21,6 +20,24 @@ let config = {
     alwaysOnline: true
 };
 let deletedCache = new Map();
+let qrCode = null;
+
+// ---------- EXPRESS WEB SERVER (shows QR code) ----------
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+    if (qrCode) {
+        res.send(`<pre>${qrCode}</pre>`);
+    } else {
+        res.send('⏳ Waiting for QR code... Refresh in 5 seconds.');
+    }
+});
+
+app.listen(PORT, () => {
+    console.log(`✅ Web server running on port ${PORT}`);
+});
+// ---------------------------------------------------------
 
 async function startBot() {
     console.log('🔧 Initializing bot...');
@@ -33,7 +50,11 @@ async function startBot() {
     });
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+        if (qr) {
+            qrCode = qr;
+            console.log('📱 QR code generated! Go to your Render URL to scan.');
+        }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log(shouldReconnect ? '🔄 Reconnecting...' : '❌ Logged out.');
@@ -114,18 +135,5 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 }
-
-// ✅ Keep the bot alive by listening on a port
-const express = require('express');
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.get('/', (req, res) => {
-    res.send('WhatsApp Bot is running!');
-});
-
-app.listen(PORT, () => {
-    console.log(`✅ Web server running on port ${PORT}`);
-});
 
 startBot().catch(err => console.error('Failed to start:', err));
