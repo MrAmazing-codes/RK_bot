@@ -20,20 +20,16 @@ let config = {
     alwaysOnline: true
 };
 let deletedCache = new Map();
-let pairingCode = null;
+let qrCode = null;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    if (pairingCode) {
-        res.send(`
-            <h1>🔑 Pairing Code</h1>
-            <h2 style="font-size:48px; letter-spacing:5px;">${pairingCode}</h2>
-            <p>Open WhatsApp → Linked Devices → Link a Device → "Link with phone number"<br>Enter this code.</p>
-        `);
+    if (qrCode) {
+        res.send(`<pre>${qrCode}</pre>`);
     } else {
-        res.send('⏳ Generating pairing code... Refresh in 5 seconds.');
+        res.send('⏳ Generating QR code... Refresh in 5 seconds.');
     }
 });
 
@@ -46,13 +42,17 @@ async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false,
+        printQRInTerminal: true,
         logger: pino({ level: 'silent' }),
         browser: ['Cloud Bot', 'Chrome', '1.0.0'],
     });
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+        if (qr) {
+            qrCode = qr;
+            console.log('📱 QR code generated! Go to your Render URL to scan.');
+        }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log(shouldReconnect ? '🔄 Reconnecting...' : '❌ Logged out.');
@@ -62,19 +62,7 @@ async function startBot() {
         }
     });
 
-    // ✅ Correct number: +255761600360
-    setTimeout(async () => {
-        try {
-            console.log('📱 Requesting pairing code...');
-            const code = await sock.requestPairingCode('255761600360');
-            pairingCode = code.match(/.{1,4}/g)?.join('-') || code;
-            console.log(`🔑 Pairing code: ${pairingCode}`);
-            console.log('Go to your Render URL to see it.');
-        } catch (err) {
-            console.error('❌ Failed to request pairing code:', err.message);
-        }
-    }, 5000);
-
+    // ---------- SOCKET EVENTS ----------
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
