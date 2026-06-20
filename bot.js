@@ -20,40 +20,46 @@ let config = {
     alwaysOnline: true
 };
 let deletedCache = new Map();
-let qrCode = null;
+let pairingCode = null;
 
-// ---------- EXPRESS WEB SERVER (shows QR code) ----------
+// ---------- EXPRESS WEB SERVER ----------
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    if (qrCode) {
-        res.send(`<pre>${qrCode}</pre>`);
+    if (pairingCode) {
+        res.send(`
+            <h1>🔑 Pairing Code</h1>
+            <h2 style="font-size:48px; letter-spacing:5px;">${pairingCode}</h2>
+            <p>Open WhatsApp → Linked Devices → Link a Device → "Link with phone number"<br>Enter this code.</p>
+        `);
     } else {
-        res.send('⏳ Waiting for QR code... Refresh in 5 seconds.');
+        res.send('⏳ Generating pairing code... Refresh in 5 seconds.');
     }
 });
 
 app.listen(PORT, () => {
     console.log(`✅ Web server running on port ${PORT}`);
 });
-// ---------------------------------------------------------
+// -----------------------------------------
 
 async function startBot() {
     console.log('🔧 Initializing bot...');
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
+        printQRInTerminal: false,      // no QR, we use pairing code
         logger: pino({ level: 'silent' }),
         browser: ['Cloud Bot', 'Chrome', '1.0.0'],
+        pairingCode: true              // enable pairing code
     });
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-        if (qr) {
-            qrCode = qr;
-            console.log('📱 QR code generated! Go to your Render URL to scan.');
+        const { connection, lastDisconnect, qr, pairingCode: code } = update;
+        if (code) {
+            pairingCode = code;
+            console.log(`🔑 Pairing code: ${code}`);
+            console.log('Go to your Render URL to see it.');
         }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
