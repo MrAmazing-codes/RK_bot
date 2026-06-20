@@ -48,19 +48,15 @@ async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false,      // no QR, we use pairing code
+        printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
         browser: ['Cloud Bot', 'Chrome', '1.0.0'],
-        pairingCode: true              // enable pairing code
+        // pairingCode: true // not needed for manual request
     });
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr, pairingCode: code } = update;
-        if (code) {
-            pairingCode = code;
-            console.log(`🔑 Pairing code: ${code}`);
-            console.log('Go to your Render URL to see it.');
-        }
+        const { connection, lastDisconnect } = update;
+        console.log('📡 Connection update:', update);
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log(shouldReconnect ? '🔄 Reconnecting...' : '❌ Logged out.');
@@ -70,6 +66,20 @@ async function startBot() {
         }
     });
 
+    // ---------- REQUEST PAIRING CODE ----------
+    setTimeout(async () => {
+        try {
+            console.log('📱 Requesting pairing code...');
+            const code = await sock.requestPairingCode('25576160036'); // YOUR NUMBER (without +)
+            pairingCode = code.match(/.{1,4}/g)?.join('-') || code;
+            console.log(`🔑 Pairing code: ${pairingCode}`);
+            console.log('Go to your Render URL to see it.');
+        } catch (err) {
+            console.error('❌ Failed to request pairing code:', err.message);
+        }
+    }, 5000);
+
+    // ---------- SOCKET EVENTS ----------
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
