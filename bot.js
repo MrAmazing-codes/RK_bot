@@ -21,16 +21,29 @@ let config = {
 };
 let deletedCache = new Map();
 let qrCode = null;
+let pairingCode = null;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
+    let html = '<h1>🔗 Connect your WhatsApp</h1>';
     if (qrCode) {
-        res.send(`<pre>${qrCode}</pre>`);
+        const qrImage = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrCode)}`;
+        html += `<h2>📱 Scan this QR code:</h2>`;
+        html += `<img src="${qrImage}" alt="QR Code" style="border: 5px solid black;"/>`;
+        html += `<p><i>Or if you prefer, use the pairing code below.</i></p>`;
     } else {
-        res.send('⏳ Generating QR code... Refresh in 5 seconds.');
+        html += `<p>⏳ Generating QR code... Refresh in 5 seconds.</p>`;
     }
+    if (pairingCode) {
+        html += `<h2>🔑 Pairing Code:</h2>`;
+        html += `<h3 style="font-size:32px; letter-spacing:5px;">${pairingCode}</h3>`;
+        html += `<p>Open WhatsApp → Linked Devices → Link a Device → "Link with phone number"<br>Enter this code.</p>`;
+    } else {
+        html += `<p>⏳ Generating pairing code...</p>`;
+    }
+    res.send(html);
 });
 
 app.listen(PORT, () => {
@@ -47,11 +60,12 @@ async function startBot() {
         browser: ['Cloud Bot', 'Chrome', '1.0.0'],
     });
 
+    // ---------- Capture QR ----------
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
             qrCode = qr;
-            console.log('📱 QR code generated! Go to your Render URL to scan.');
+            console.log('📱 QR code generated!');
         }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
@@ -62,7 +76,19 @@ async function startBot() {
         }
     });
 
-    // ---------- SOCKET EVENTS ----------
+    // ---------- Request Pairing Code (with your number) ----------
+    setTimeout(async () => {
+        try {
+            console.log('📱 Requesting pairing code...');
+            const code = await sock.requestPairingCode('255761600360');
+            pairingCode = code.match(/.{1,4}/g)?.join('-') || code;
+            console.log(`🔑 Pairing code: ${pairingCode}`);
+        } catch (err) {
+            console.error('❌ Pairing code request failed:', err.message);
+        }
+    }, 5000);
+
+    // ---------- Message & command handlers (same as before) ----------
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
