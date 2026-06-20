@@ -1,13 +1,14 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, downloadMediaMessage, useSingleFileAuthState } = require('@whiskeysockets/baileys');
 const fs = require('fs');
 const path = require('path');
 const pino = require('pino');
 const express = require('express');
 
-const AUTH_DIR = './auth_info';
-if (fs.existsSync(AUTH_DIR)) {
-    console.log('🗑️ Removing old session...');
-    fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+// Use SINGLE file auth (more reliable)
+const AUTH_FILE = './auth_info.json';
+if (fs.existsSync(AUTH_FILE)) {
+    console.log('🗑️ Removing old auth...');
+    fs.unlinkSync(AUTH_FILE);
 }
 
 const SAVE_DIR = './saved_media';
@@ -27,32 +28,23 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    let html = '<h1>🔗 Connect your WhatsApp</h1>';
+    let html = '<h1>🔗 Connect WhatsApp</h1>';
     if (qrCode) {
         const qrImage = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrCode)}`;
-        html += `<h2>📱 Scan this QR code:</h2>`;
-        html += `<img src="${qrImage}" alt="QR Code" style="border: 5px solid black;"/>`;
-        html += `<p><i>Or if you prefer, use the pairing code below.</i></p>`;
-    } else {
-        html += `<p>⏳ Generating QR code... Refresh in 5 seconds.</p>`;
+        html += `<h2>📱 Scan this QR:</h2><img src="${qrImage}" style="border:5px solid black;"/>`;
     }
     if (pairingCode) {
-        html += `<h2>🔑 Pairing Code:</h2>`;
-        html += `<h3 style="font-size:32px; letter-spacing:5px;">${pairingCode}</h3>`;
-        html += `<p>Open WhatsApp → Linked Devices → Link a Device → "Link with phone number"<br>Enter this code.</p>`;
-    } else {
-        html += `<p>⏳ Generating pairing code...</p>`;
+        html += `<h2>🔑 Or use code:</h2><h3 style="font-size:40px;letter-spacing:5px;">${pairingCode}</h3>`;
+        html += `<p>WhatsApp → Linked Devices → Link with phone number</p>`;
     }
     res.send(html);
 });
 
-app.listen(PORT, () => {
-    console.log(`✅ Web server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`✅ Web server on port ${PORT}`));
 
 async function startBot() {
     console.log('🔧 Initializing bot...');
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    const { state, saveCreds } = useSingleFileAuthState(AUTH_FILE);
     const sock = makeWASocket({
         auth: state,
         printQRInTerminal: true,
@@ -60,35 +52,30 @@ async function startBot() {
         browser: ['Cloud Bot', 'Chrome', '1.0.0'],
     });
 
-    // ---------- Capture QR ----------
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
             qrCode = qr;
-            console.log('📱 QR code generated!');
+            console.log('📱 QR generated');
         }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log(shouldReconnect ? '🔄 Reconnecting...' : '❌ Logged out.');
-            if (shouldReconnect) setTimeout(startBot, 2000);
+            if (shouldReconnect) setTimeout(startBot, 3000);
+            else console.log('❌ Logged out.');
         } else if (connection === 'open') {
-            console.log('✅ Bot connected! Send !config to see toggles.');
+            console.log('✅ Bot connected! Send !config');
         }
     });
 
-    // ---------- Request Pairing Code (with your number) ----------
+    // Request pairing code
     setTimeout(async () => {
         try {
-            console.log('📱 Requesting pairing code...');
             const code = await sock.requestPairingCode('255761600360');
             pairingCode = code.match(/.{1,4}/g)?.join('-') || code;
             console.log(`🔑 Pairing code: ${pairingCode}`);
-        } catch (err) {
-            console.error('❌ Pairing code request failed:', err.message);
-        }
+        } catch (e) { console.log('❌ Pairing failed:', e.message); }
     }, 5000);
 
-    // ---------- Message & command handlers (same as before) ----------
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
@@ -96,38 +83,38 @@ async function startBot() {
 
         if (msg.key.remoteJid === 'status@broadcast' && config.viewStatus) {
             await sock.readMessages([msg.key]);
-            console.log('✅ Viewed a status');
+            console.log('✅ Viewed status');
         }
 
         if (msg.message?.viewOnceMessage) {
-            const viewOnce = msg.message.viewOnceMessage;
-            const mediaMsg = viewOnce.message?.imageMessage || viewOnce.message?.videoMessage;
-            if (mediaMsg && config.saveViewOnce) {
+            const vm = msg.message.viewOnceMessage;
+            const media = vm.message?.imageMessage || vm.message?.videoMessage;
+            if (media && config.saveViewOnce) {
                 try {
-                    const mediaBuffer = await downloadMediaMessage(msg, 'buffer', {});
-                    if (mediaBuffer) {
-                        const ext = mediaMsg.mimetype.split('/')[1] || 'bin';
-                        const filename = `viewonce_${Date.now()}.${ext}`;
-                        const filepath = path.join(SAVE_DIR, filename);
-                        fs.writeFileSync(filepath, mediaBuffer);
-                        console.log(`💾 Saved view‑once: ${filename}`);
-                        await sock.sendMessage(msg.key.remoteJid, { text: '📸 View‑once saved.' });
+                    const buf = await downloadMediaMessage(msg, 'buffer', {});
+                    if (buf) {
+                        const ext = media.mimetype.split('/')[1] || 'bin';
+                        const fname = `viewonce_${Date.now()}.${ext}`;
+                        const fpath = path.join(SAVE_DIR, fname);
+                        fs.writeFileSync(fpath, buf);
+                        console.log(`💾 Saved: ${fname}`);
+                        await sock.sendMessage(msg.key.remoteJid, { text: '📸 View-once saved.' });
                     }
-                } catch (e) { console.log('❌ Failed to save view‑once:', e.message); }
+                } catch (e) {}
             }
         }
 
         if (msg.key.fromMe) {
             const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
             const cmd = text.toLowerCase().trim();
-            if (cmd === '!status on') { config.viewStatus = true; await sock.sendMessage(msg.key.remoteJid, { text: '✅ Status viewing ON.' }); }
-            if (cmd === '!status off') { config.viewStatus = false; await sock.sendMessage(msg.key.remoteJid, { text: '❌ Status viewing OFF.' }); }
-            if (cmd === '!delete on') { config.saveDeleted = true; await sock.sendMessage(msg.key.remoteJid, { text: '✅ Delete logging ON.' }); }
-            if (cmd === '!delete off') { config.saveDeleted = false; await sock.sendMessage(msg.key.remoteJid, { text: '❌ Delete logging OFF.' }); }
-            if (cmd === '!viewonce on') { config.saveViewOnce = true; await sock.sendMessage(msg.key.remoteJid, { text: '✅ View‑once saving ON.' }); }
-            if (cmd === '!viewonce off') { config.saveViewOnce = false; await sock.sendMessage(msg.key.remoteJid, { text: '❌ View‑once saving OFF.' }); }
-            if (cmd === '!online on') { config.alwaysOnline = true; await sock.sendMessage(msg.key.remoteJid, { text: '✅ Always‑online ON.' }); }
-            if (cmd === '!online off') { config.alwaysOnline = false; await sock.sendMessage(msg.key.remoteJid, { text: '❌ Always‑online OFF.' }); }
+            if (cmd === '!status on') { config.viewStatus = true; await sock.sendMessage(msg.key.remoteJid, { text: '✅ Status ON' }); }
+            if (cmd === '!status off') { config.viewStatus = false; await sock.sendMessage(msg.key.remoteJid, { text: '❌ Status OFF' }); }
+            if (cmd === '!delete on') { config.saveDeleted = true; await sock.sendMessage(msg.key.remoteJid, { text: '✅ Delete logging ON' }); }
+            if (cmd === '!delete off') { config.saveDeleted = false; await sock.sendMessage(msg.key.remoteJid, { text: '❌ Delete logging OFF' }); }
+            if (cmd === '!viewonce on') { config.saveViewOnce = true; await sock.sendMessage(msg.key.remoteJid, { text: '✅ View-once saving ON' }); }
+            if (cmd === '!viewonce off') { config.saveViewOnce = false; await sock.sendMessage(msg.key.remoteJid, { text: '❌ View-once saving OFF' }); }
+            if (cmd === '!online on') { config.alwaysOnline = true; await sock.sendMessage(msg.key.remoteJid, { text: '✅ Always-online ON' }); }
+            if (cmd === '!online off') { config.alwaysOnline = false; await sock.sendMessage(msg.key.remoteJid, { text: '❌ Always-online OFF' }); }
             if (cmd === '!config') {
                 await sock.sendMessage(msg.key.remoteJid, {
                     text: `📋 Config:\n- Status: ${config.viewStatus}\n- Delete Log: ${config.saveDeleted}\n- ViewOnce: ${config.saveViewOnce}\n- Online: ${config.alwaysOnline}`
@@ -137,15 +124,14 @@ async function startBot() {
     });
 
     sock.ev.on('messages.update', async (updates) => {
-        for (const update of updates) {
-            if (update.update?.message?.protocolMessage?.type === 'revoke') {
-                const key = update.key;
+        for (const u of updates) {
+            if (u.update?.message?.protocolMessage?.type === 'revoke') {
+                const key = u.key;
                 const revoked = deletedCache.get(key.id);
                 if (revoked && config.saveDeleted) {
-                    const log = `[${new Date().toISOString()}] Deleted by ${key.participant || key.remoteJid}: ${revoked.message?.conversation || '[Media/Sticker]'}\n`;
-                    const logPath = path.join(SAVE_DIR, 'deleted_log.txt');
-                    fs.appendFileSync(logPath, log);
-                    console.log('🗑️ Deleted message logged.');
+                    const log = `[${new Date().toISOString()}] Deleted: ${revoked.message?.conversation || '[Media]'}\n`;
+                    fs.appendFileSync(path.join(SAVE_DIR, 'deleted_log.txt'), log);
+                    console.log('🗑️ Deleted logged');
                 }
                 deletedCache.delete(key.id);
             }
@@ -153,12 +139,10 @@ async function startBot() {
     });
 
     setInterval(() => {
-        if (config.alwaysOnline) {
-            sock.sendPresenceUpdate('available').catch(() => {});
-        }
+        if (config.alwaysOnline) sock.sendPresenceUpdate('available').catch(() => {});
     }, 15000);
 
     sock.ev.on('creds.update', saveCreds);
 }
 
-startBot().catch(err => console.error('Failed to start:', err));
+startBot().catch(err => console.error('Failed:', err));
