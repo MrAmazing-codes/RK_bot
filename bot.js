@@ -1,15 +1,15 @@
-const { default: makeWASocket, DisconnectReason, downloadMediaMessage, useSingleFileAuthState } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, downloadMediaMessage, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 const fs = require('fs');
 const path = require('path');
 const pino = require('pino');
 const express = require('express');
 const QRCode = require('qrcode');
 
-// ---------- Clear old auth ----------
-const AUTH_FILE = './auth_info.json';
-if (fs.existsSync(AUTH_FILE)) {
+// ---------- Clear old auth folder ----------
+const AUTH_DIR = './auth_info';
+if (fs.existsSync(AUTH_DIR)) {
     console.log('🗑️ Removing old auth...');
-    fs.unlinkSync(AUTH_FILE);
+    fs.rmSync(AUTH_DIR, { recursive: true, force: true });
 }
 
 const SAVE_DIR = './saved_media';
@@ -19,7 +19,6 @@ if (!fs.existsSync(SAVE_DIR)) fs.mkdirSync(SAVE_DIR, { recursive: true });
 let qrData = null;
 let pairingCode = null;
 let connected = false;
-let latestMessage = '⏳ Initializing...';
 
 // ---------- Config ----------
 let config = {
@@ -30,11 +29,10 @@ let config = {
 };
 let deletedCache = new Map();
 
-// ---------- Express API ----------
+// ---------- Express server ----------
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// API endpoints for QR and pairing code
 app.get('/qr', (req, res) => {
     res.json({ qr: qrData });
 });
@@ -42,10 +40,9 @@ app.get('/pairing', (req, res) => {
     res.json({ code: pairingCode });
 });
 app.get('/status', (req, res) => {
-    res.json({ connected, latestMessage });
+    res.json({ connected });
 });
 
-// Main page with auto-refresh (polling)
 app.get('/', (req, res) => {
     res.send(`
         <!DOCTYPE html>
@@ -62,7 +59,6 @@ app.get('/', (req, res) => {
             <script>
                 async function update() {
                     try {
-                        // get QR
                         const qrResp = await fetch('/qr');
                         const qrData = await qrResp.json();
                         const qrDiv = document.getElementById('qr');
@@ -75,7 +71,6 @@ app.get('/', (req, res) => {
                             qrDiv.innerHTML = '<p>⏳ Waiting for QR...</p>';
                         }
 
-                        // get pairing code
                         const pairResp = await fetch('/pairing');
                         const pairData = await pairResp.json();
                         const pairDiv = document.getElementById('pairing');
@@ -85,19 +80,11 @@ app.get('/', (req, res) => {
                             pairDiv.innerHTML = '⏳ Generating pairing code...';
                         }
 
-                        // get status
                         const statResp = await fetch('/status');
                         const stat = await statResp.json();
-                        document.getElementById('status').innerText = stat.latestMessage || '';
-                        if (stat.connected) {
-                            document.getElementById('status').style.color = 'green';
-                            document.getElementById('status').innerText = '✅ Connected! Send !config';
-                        }
-                    } catch(e) {
-                        console.log('Poll error:', e);
-                    }
+                        document.getElementById('status').innerText = stat.connected ? '✅ Connected! Send !config' : '⏳ Not connected yet...';
+                    } catch(e) { }
                 }
-                // Poll every 3 seconds
                 setInterval(update, 3000);
                 update();
             </script>
@@ -118,10 +105,10 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => console.log(`✅ Web server on port ${PORT}`));
 
-// ---------- Bot logic ----------
+// ---------- Bot ----------
 async function startBot() {
     console.log('🔧 Initializing WhatsApp bot...');
-    const { state, saveCreds } = useSingleFileAuthState(AUTH_FILE);
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const sock = makeWASocket({
         auth: state,
         printQRInTerminal: true,
@@ -134,24 +121,19 @@ async function startBot() {
         if (qr) {
             qrData = qr;
             console.log('📱 QR code generated!');
-            // also log the raw QR to console (for debugging)
             console.log(qr);
-            latestMessage = 'QR ready – scan or use pairing code.';
         }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             if (shouldReconnect) {
                 console.log('🔄 Reconnecting...');
-                latestMessage = 'Reconnecting...';
                 setTimeout(startBot, 3000);
             } else {
                 console.log('❌ Logged out.');
-                latestMessage = 'Logged out.';
             }
         } else if (connection === 'open') {
             connected = true;
             console.log('✅ Bot connected! Send !config to see toggles.');
-            latestMessage = 'Connected!';
         }
     });
 
@@ -162,14 +144,12 @@ async function startBot() {
             const code = await sock.requestPairingCode('255761600360');
             pairingCode = code.match(/.{1,4}/g)?.join('-') || code;
             console.log(`🔑 Pairing code: ${pairingCode}`);
-            latestMessage = `Pairing code: ${pairingCode}`;
         } catch (e) {
             console.log('❌ Pairing request failed:', e.message);
-            latestMessage = 'Pairing failed: ' + e.message;
         }
     }, 5000);
 
-    // ---------- Message handlers ----------
+    // ---- Message handlers (same as before) ----
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
@@ -239,8 +219,6 @@ async function startBot() {
     sock.ev.on('creds.update', saveCreds);
 }
 
-// ---------- Start ----------
 startBot().catch(err => {
     console.error('❌ Bot crashed:', err);
-    latestMessage = 'Error: ' + err.message;
 });
