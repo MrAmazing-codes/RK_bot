@@ -3,7 +3,9 @@ const fs = require('fs');
 const path = require('path');
 const pino = require('pino');
 const express = require('express');
+const QRCode = require('qrcode');
 
+// ---------- Clear old auth ----------
 const AUTH_FILE = './auth_info.json';
 if (fs.existsSync(AUTH_FILE)) {
     console.log('🗑️ Removing old auth...');
@@ -13,6 +15,13 @@ if (fs.existsSync(AUTH_FILE)) {
 const SAVE_DIR = './saved_media';
 if (!fs.existsSync(SAVE_DIR)) fs.mkdirSync(SAVE_DIR, { recursive: true });
 
+// ---------- Global state ----------
+let qrData = null;
+let pairingCode = null;
+let connected = false;
+let latestMessage = '⏳ Initializing...';
+
+// ---------- Config ----------
 let config = {
     viewStatus: true,
     saveViewOnce: true,
@@ -20,35 +29,102 @@ let config = {
     alwaysOnline: true
 };
 let deletedCache = new Map();
-let qrCode = null;
-let pairingCode = null;
 
+// ---------- Express API ----------
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// API endpoints for QR and pairing code
+app.get('/qr', (req, res) => {
+    res.json({ qr: qrData });
+});
+app.get('/pairing', (req, res) => {
+    res.json({ code: pairingCode });
+});
+app.get('/status', (req, res) => {
+    res.json({ connected, latestMessage });
+});
+
+// Main page with auto-refresh (polling)
 app.get('/', (req, res) => {
-    let html = '<h1>🔗 Connect WhatsApp</h1>';
-    if (qrCode) {
-        const qrImage = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrCode)}`;
-        html += `<h2>📱 Scan this QR:</h2><img src="${qrImage}" style="border:5px solid black;"/>`;
-    } else {
-        html += `<p>⏳ Waiting for QR code... (check logs below)</p>`;
-    }
-    if (pairingCode) {
-        html += `<h2>🔑 Or use code:</h2><h3 style="font-size:40px;letter-spacing:5px;">${pairingCode}</h3>`;
-        html += `<p>WhatsApp → Linked Devices → Link with phone number</p>`;
-    }
-    res.send(html);
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>WhatsApp Bot</title>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body { font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; }
+                #qr img { border: 5px solid black; max-width: 100%; }
+                #pairing { font-size: 40px; letter-spacing: 5px; font-weight: bold; }
+            </style>
+            <script>
+                async function update() {
+                    try {
+                        // get QR
+                        const qrResp = await fetch('/qr');
+                        const qrData = await qrResp.json();
+                        const qrDiv = document.getElementById('qr');
+                        if (qrData.qr) {
+                            const img = document.createElement('img');
+                            img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(qrData.qr);
+                            qrDiv.innerHTML = '';
+                            qrDiv.appendChild(img);
+                        } else {
+                            qrDiv.innerHTML = '<p>⏳ Waiting for QR...</p>';
+                        }
+
+                        // get pairing code
+                        const pairResp = await fetch('/pairing');
+                        const pairData = await pairResp.json();
+                        const pairDiv = document.getElementById('pairing');
+                        if (pairData.code) {
+                            pairDiv.innerHTML = '🔑 ' + pairData.code;
+                        } else {
+                            pairDiv.innerHTML = '⏳ Generating pairing code...';
+                        }
+
+                        // get status
+                        const statResp = await fetch('/status');
+                        const stat = await statResp.json();
+                        document.getElementById('status').innerText = stat.latestMessage || '';
+                        if (stat.connected) {
+                            document.getElementById('status').style.color = 'green';
+                            document.getElementById('status').innerText = '✅ Connected! Send !config';
+                        }
+                    } catch(e) {
+                        console.log('Poll error:', e);
+                    }
+                }
+                // Poll every 3 seconds
+                setInterval(update, 3000);
+                update();
+            </script>
+        </head>
+        <body>
+            <h1>🤖 WhatsApp Bot</h1>
+            <div id="qr"><p>⏳ Loading QR...</p></div>
+            <hr>
+            <h2>🔑 Pairing Code</h2>
+            <div id="pairing">⏳ Loading...</div>
+            <hr>
+            <div id="status">⏳ Connecting...</div>
+            <p><small>If QR doesn't appear, use the pairing code above in WhatsApp → Linked Devices → Link with phone number.</small></p>
+        </body>
+        </html>
+    `);
 });
 
 app.listen(PORT, () => console.log(`✅ Web server on port ${PORT}`));
 
+// ---------- Bot logic ----------
 async function startBot() {
-    console.log('🔧 Initializing bot...');
+    console.log('🔧 Initializing WhatsApp bot...');
     const { state, saveCreds } = useSingleFileAuthState(AUTH_FILE);
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,          // Prints QR in logs
+        printQRInTerminal: true,
         logger: pino({ level: 'silent' }),
         browser: ['Cloud Bot', 'Chrome', '1.0.0'],
     });
@@ -56,30 +132,44 @@ async function startBot() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
-            qrCode = qr;
-            console.log('📱 QR code generated! (see below for ASCII)');
-            console.log(qr); // <-- PRINT QR IN LOGS
+            qrData = qr;
+            console.log('📱 QR code generated!');
+            // also log the raw QR to console (for debugging)
+            console.log(qr);
+            latestMessage = 'QR ready – scan or use pairing code.';
         }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) setTimeout(startBot, 3000);
-            else console.log('❌ Logged out.');
+            if (shouldReconnect) {
+                console.log('🔄 Reconnecting...');
+                latestMessage = 'Reconnecting...';
+                setTimeout(startBot, 3000);
+            } else {
+                console.log('❌ Logged out.');
+                latestMessage = 'Logged out.';
+            }
         } else if (connection === 'open') {
-            console.log('✅ Bot connected! Send !config');
+            connected = true;
+            console.log('✅ Bot connected! Send !config to see toggles.');
+            latestMessage = 'Connected!';
         }
     });
 
     // Request pairing code after 5 seconds
     setTimeout(async () => {
         try {
+            console.log('📱 Requesting pairing code...');
             const code = await sock.requestPairingCode('255761600360');
             pairingCode = code.match(/.{1,4}/g)?.join('-') || code;
             console.log(`🔑 Pairing code: ${pairingCode}`);
+            latestMessage = `Pairing code: ${pairingCode}`;
         } catch (e) {
             console.log('❌ Pairing request failed:', e.message);
+            latestMessage = 'Pairing failed: ' + e.message;
         }
     }, 5000);
 
+    // ---------- Message handlers ----------
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
@@ -101,10 +191,10 @@ async function startBot() {
                         const fname = `viewonce_${Date.now()}.${ext}`;
                         const fpath = path.join(SAVE_DIR, fname);
                         fs.writeFileSync(fpath, buf);
-                        console.log(`💾 Saved: ${fname}`);
+                        console.log(`💾 Saved view-once: ${fname}`);
                         await sock.sendMessage(msg.key.remoteJid, { text: '📸 View-once saved.' });
                     }
-                } catch (e) {}
+                } catch (e) { console.log('❌ Save view-once error:', e.message); }
             }
         }
 
@@ -149,4 +239,8 @@ async function startBot() {
     sock.ev.on('creds.update', saveCreds);
 }
 
-startBot().catch(err => console.error('Failed:', err));
+// ---------- Start ----------
+startBot().catch(err => {
+    console.error('❌ Bot crashed:', err);
+    latestMessage = 'Error: ' + err.message;
+});
