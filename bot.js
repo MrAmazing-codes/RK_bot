@@ -4,7 +4,6 @@ const path = require('path');
 const pino = require('pino');
 const express = require('express');
 
-// Use SINGLE file auth (more reliable)
 const AUTH_FILE = './auth_info.json';
 if (fs.existsSync(AUTH_FILE)) {
     console.log('🗑️ Removing old auth...');
@@ -32,6 +31,8 @@ app.get('/', (req, res) => {
     if (qrCode) {
         const qrImage = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrCode)}`;
         html += `<h2>📱 Scan this QR:</h2><img src="${qrImage}" style="border:5px solid black;"/>`;
+    } else {
+        html += `<p>⏳ Waiting for QR code... (check logs below)</p>`;
     }
     if (pairingCode) {
         html += `<h2>🔑 Or use code:</h2><h3 style="font-size:40px;letter-spacing:5px;">${pairingCode}</h3>`;
@@ -47,7 +48,7 @@ async function startBot() {
     const { state, saveCreds } = useSingleFileAuthState(AUTH_FILE);
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
+        printQRInTerminal: true,          // Prints QR in logs
         logger: pino({ level: 'silent' }),
         browser: ['Cloud Bot', 'Chrome', '1.0.0'],
     });
@@ -56,7 +57,8 @@ async function startBot() {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
             qrCode = qr;
-            console.log('📱 QR generated');
+            console.log('📱 QR code generated! (see below for ASCII)');
+            console.log(qr); // <-- PRINT QR IN LOGS
         }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
@@ -67,13 +69,15 @@ async function startBot() {
         }
     });
 
-    // Request pairing code
+    // Request pairing code after 5 seconds
     setTimeout(async () => {
         try {
             const code = await sock.requestPairingCode('255761600360');
             pairingCode = code.match(/.{1,4}/g)?.join('-') || code;
             console.log(`🔑 Pairing code: ${pairingCode}`);
-        } catch (e) { console.log('❌ Pairing failed:', e.message); }
+        } catch (e) {
+            console.log('❌ Pairing request failed:', e.message);
+        }
     }, 5000);
 
     sock.ev.on('messages.upsert', async (m) => {
